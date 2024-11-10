@@ -1,6 +1,8 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <Servo.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 
 // Define os pinos para cada sensor ultrassônico
 #define TRIG_PIN_1 30
@@ -32,8 +34,12 @@ MFRC522 rfid(SS_PIN, RST_PIN);
 Servo catracaServo;
 
 // Ângulos do servo motor
-#define ANGULO_FECHADO 0
-#define ANGULO_ABERTO 90
+#define ANGULO_FECHADO 115
+#define ANGULO_ABERTO 240
+
+
+// Inicialização do LCD
+LiquidCrystal_I2C lcd(0x3F, 20, 4);
 
 // Variáveis para controle das catracas
 bool catracaEntradaAberta = false;
@@ -48,7 +54,18 @@ void setup() {
   while (!Serial);
   
   Serial.println("Iniciando setup...");
-  
+
+
+ // Inicialização do LCD
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Sistema Iniciado!");
+  delay(2000);  // Exibe a mensagem por 2 segundos
+  lcd.clear();
+
+
   // Configura os pinos dos LEDs como saída
   pinMode(LED_VAGA_1, OUTPUT);
   pinMode(LED_VAGA_2, OUTPUT);
@@ -102,6 +119,9 @@ void setup() {
   catracaServo.write(ANGULO_FECHADO); // Inicia com a catraca fechada
   
   Serial.println("Sistema de estacionamento iniciado!");
+    delay(2000);
+  lcd.clear();
+  lcd.print("Insira seu cartao");
 }
 
 // Função para atualizar os LEDs baseado nas distâncias
@@ -110,6 +130,27 @@ void atualizarLEDs(int distance1, int distance2, int distance3, int distance4) {
   digitalWrite(LED_VAGA_2, distance2 < 15 ? HIGH : LOW);
   digitalWrite(LED_VAGA_3, distance3 < 15 ? HIGH : LOW);
   digitalWrite(LED_VAGA_4, distance4 < 15 ? HIGH : LOW);
+}
+
+// Função para contar o número de vagas disponíveis
+int contarVagasDisponiveis() {
+  int vagas = 0;
+  vagas += readDistance(TRIG_PIN_1, ECHO_PIN_1) >= 15 ? 1 : 0;
+  vagas += readDistance(TRIG_PIN_2, ECHO_PIN_2) >= 15 ? 1 : 0;
+  vagas += readDistance(TRIG_PIN_3, ECHO_PIN_3) >= 15 ? 1 : 0;
+  vagas += readDistance(TRIG_PIN_4, ECHO_PIN_4) >= 15 ? 1 : 0;
+  return vagas;
+}
+
+void atualizarLCD(const char* mensagemLinha1, const char* mensagemLinha2, int vagasDisponiveis) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(mensagemLinha1);
+  lcd.setCursor(0, 1);
+  lcd.print(mensagemLinha2);
+  lcd.setCursor(0, 3);
+  lcd.print("Vagas presentes: ");
+  lcd.print(vagasDisponiveis);
 }
 
 // Função para leitura da distância dos sensores ultrassônicos
@@ -202,95 +243,78 @@ void controlarServo(bool abrir) {
   }
 }
 
-// Controle de entrada com RFID
+// Controle de entrada com RFID (com atualização do LCD)
 void checkRFIDStatus() {
-  // Não processa entrada se a catraca de saída estiver aberta
   if (catracaSaidaAberta) {
-    Serial.println("[SISTEMA] Entrada bloqueada - Aguardando conclusão da saída");
+    atualizarLCD("Aguardando saida", "Entrada bloqueada", contarVagasDisponiveis());
     return;
   }
 
-  // Verifica se há carro no sensor de entrada
   bool carroPresente = (digitalRead(SENSOR_ENTRADA) == LOW);
-  
-  // Log da presença do carro na entrada (apenas uma vez)
   if (carroPresente && !carroNaEntradaLogado) {
-    Serial.println("[SISTEMA] Veículo aguardando na entrada - Aguardando apresentação do cartão");
+    atualizarLCD("Aguardando Cartao", "", contarVagasDisponiveis());
     carroNaEntradaLogado = true;
   } else if (!carroPresente) {
     carroNaEntradaLogado = false;
   }
 
-  // Verifica se há novo cartão
   if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
-    Serial.println("\n[RFID] Cartão detectado!");
-    
     if (carroPresente) {
-      // Verifica se há vagas disponíveis
       if (checkVagasDisponiveis()) {
         int vagaDisponivel = encontrarVagaDisponivel();
-        Serial.println("[RFID] Acesso AUTORIZADO - Há vagas disponíveis");
-        Serial.print("[SISTEMA] Dirija-se à vaga ");
-        Serial.println(vagaDisponivel);
-        Serial.println("[SISTEMA] Abrindo catraca de entrada...");
+        atualizarLCD("Acesso AUTORIZADO", "Dirija-se a vaga", contarVagasDisponiveis());
         catracaEntradaAberta = true;
         tempoAberturaCatracaEntrada = millis();
-        controlarServo(true); // Abre a catraca
+        controlarServo(true);
       } else {
-        Serial.println("[RFID] Acesso NEGADO - Todas as vagas estão ocupadas");
+        atualizarLCD("Acesso NEGADO", "Vagas ocupadas", contarVagasDisponiveis());
       }
     } else {
-      Serial.println("[SISTEMA] Erro: Cartão detectado mas não há veículo no sensor de entrada");
+      atualizarLCD("Erro: Cartao", "Sem veiculo na entrada", contarVagasDisponiveis());
     }
-    
     rfid.PICC_HaltA();
     rfid.PCD_StopCrypto1();
   }
 }
 
-// Controle da catraca de entrada
+// Controle da catraca de entrada (com atualização do LCD)
 void controleCatracaEntrada() {
   if (catracaEntradaAberta) {
-    // Verifica se passou o tempo limite (5 segundos)
     if (millis() - tempoAberturaCatracaEntrada >= TEMPO_CATRACA) {
-      Serial.println("[SISTEMA] Tempo expirado - Fechando catraca de entrada");
+      atualizarLCD("Tempo expirado", "Fechando catraca", contarVagasDisponiveis());
       catracaEntradaAberta = false;
-      controlarServo(false); // Fecha a catraca
+      controlarServo(false);
     }
   }
 }
 
-// Controle da catraca de saída
+
+// Controle da catraca de saída (com atualização do LCD)
 void controleCatracaSaida() {
-  // Verifica se há carro no sensor de saída e se a catraca não está já aberta
   if (digitalRead(SENSOR_SAIDA) == LOW && !catracaSaidaAberta) {
-    Serial.println("[SISTEMA] Carro detectado no sensor de saída");
-    Serial.println("[SISTEMA] Abrindo catraca de saída...");
+    atualizarLCD("Saida Liberada", "Aguarde...", contarVagasDisponiveis());
     catracaSaidaAberta = true;
     tempoAberturaCatracaSaida = millis();
-    controlarServo(true); // Abre a catraca
+    controlarServo(true);
   }
-  
-  // Controle do tempo de abertura da catraca de saída
+
   if (catracaSaidaAberta) {
     if (millis() - tempoAberturaCatracaSaida >= TEMPO_CATRACA) {
-      Serial.println("[SISTEMA] Tempo expirado - Fechando catraca de saída");
+      atualizarLCD("Saida concluida", "Fechando catraca", contarVagasDisponiveis());
       catracaSaidaAberta = false;
-      controlarServo(false); // Fecha a catraca
+      controlarServo(false);
     }
   }
 }
 
 void loop() {
-  printVagasStatus();
-  
-  // Executa o controle de entrada apenas se a saída não estiver em processo
-  if (!catracaSaidaAberta) {
-    checkRFIDStatus();
-    controleCatracaEntrada();
-  }
-  
+  checkRFIDStatus();
+  controleCatracaEntrada();
   controleCatracaSaida();
   
-  delay(1000);
+  // Atualize o LCD periodicamente com o status das vagas e mensagem padrão
+  int vagasDisponiveis = contarVagasDisponiveis();
+  atualizarLCD("Sistema Operando", "", vagasDisponiveis);
+  
+  delay(1000); // Pequeno atraso para evitar muitas atualizações no LCD
 }
